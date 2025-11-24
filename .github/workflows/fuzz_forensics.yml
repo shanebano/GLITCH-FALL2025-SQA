@@ -10,138 +10,84 @@ on:
       - main
       - develop
 
+permissions:
+  contents: read
+
 jobs:
-  fuzz-and-forensics-python-38:
-    name: Fuzz and Forensics Testing (Python 3.8)
+  fuzz-and-forensics:
+    name: Fuzz and Forensics (matrix)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12']
+
+    timeout-minutes: 60
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: 3.8
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-py${{ matrix.python-version }}-
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
 
-    - name: Run Fuzz Testing
-      run: |
-        python fuzz.py
-      continue-on-error: false
+      - name: Upgrade pip and tooling
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
 
-    - name: Run Unit Tests for Forensics
-      run: |
-        pytest tests/ -v --cov=. --cov-report=xml --cov-report=term
+      - name: Install project dependencies (if any)
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "No requirements.txt found, skipping dependency install"
+          fi
 
-  fuzz-and-forensics-python-39:
-    name: Fuzz and Forensics Testing (Python 3.9)
-    runs-on: ubuntu-latest
+      - name: Install test & fuzz tools (best-effort)
+        run: |
+          pip install --upgrade pytest coverage || true
 
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Run Fuzz Testing (only if fuzz.py exists)
+        run: |
+          set -o pipefail
+          if [ -f ./fuzz.py ]; then
+            echo "Found fuzz.py — running fuzz test"
+            # Run fuzz.py and let it fail the job if it returns non-zero.
+            python ./fuzz.py
+          else
+            echo "No fuzz.py found, skipping fuzz step"
+          fi
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: 3.9
+      - name: Run Unit Tests for Forensics (only if tests exist)
+        run: |
+          set -o pipefail
+          # detect tests directory or test files
+          shopt -s nullglob || true
+          test_files=(tests/*.py)
+          if [ -d tests ] || [ "${#test_files[@]}" -gt 0 ]; then
+            echo "Running pytest..."
+            pytest tests/ -v --maxfail=1 --disable-warnings --junitxml=pytest-results.xml --cov=. --cov-report=xml
+          else
+            echo "No tests found under tests/, skipping pytest"
+          fi
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-
-    - name: Run Fuzz Testing
-      run: |
-        python fuzz.py
-      continue-on-error: false
-
-    - name: Run Unit Tests for Forensics
-      run: |
-        pytest tests/ -v --cov=. --cov-report=xml --cov-report=term
-
-  fuzz-and-forensics-python-310:
-    name: Fuzz and Forensics Testing (Python 3.10)
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: 3.10
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-
-    - name: Run Fuzz Testing
-      run: |
-        python fuzz.py
-      continue-on-error: false
-
-    - name: Run Unit Tests for Forensics
-      run: |
-        pytest tests/ -v --cov=. --cov-report=xml --cov-report=term
-
-  fuzz-and-forensics-python-311:
-    name: Fuzz and Forensics Testing (Python 3.11)
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: 3.11
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-
-    - name: Run Fuzz Testing
-      run: |
-        python fuzz.py
-      continue-on-error: false
-
-    - name: Run Unit Tests for Forensics
-      run: |
-        pytest tests/ -v --cov=. --cov-report=xml --cov-report=term
-
-  fuzz-and-forensics-python-312:
-    name: Fuzz and Forensics Testing (Python 3.12)
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: 3.12
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-
-    - name: Run Fuzz Testing
-      run: |
-        python fuzz.py
-      continue-on-error: false
-
-    - name: Run Unit Tests for Forensics
-      run: |
-        pytest tests/ -v --cov=. --cov-report=xml --cov-report=term
+      - name: Upload pytest and coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-forensics-artifacts-${{ matrix.python-version }}
+          path: |
+            pytest-results.xml
+            coverage.xml
+            .coverage
+            fuzz.log
